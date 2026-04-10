@@ -1,72 +1,131 @@
 #!/usr/bin/env bash
 # Claude Code status line script
 # Receives JSON on stdin and prints a formatted status line
+# Zero external dependencies — no jq, no bc
 
 input=$(cat)
 
-# --- Model ---
-model=$(echo "$input" | jq -r '.model.display_name // "Unknown Model"')
+# --- JSON helpers (no jq) ---
+# Extract a simple string/number value by key path
+json_val() {
+  echo "$input" | sed 's|\\\\|/|g' | grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*:[[:space:]]*"//; s/"$//'
+}
+json_num() {
+  echo "$input" | grep -o "\"$1\"[[:space:]]*:[[:space:]]*[0-9.]*" | head -1 | sed 's/.*:[[:space:]]*//'
+}
 
-# --- Project path (last 2 path components for brevity) ---
-project_dir=$(echo "$input" | jq -r '.workspace.project_dir // .cwd // ""')
+# Extract field from a specific JSON block (to handle duplicate keys)
+json_block_num() {
+  local block="$1" field="$2"
+  echo "$input" | grep -o "\"$block\"[^}]*}" | head -1 | grep -o "\"$field\"[[:space:]]*:[[:space:]]*[0-9.]*" | head -1 | sed 's/.*:[[:space:]]*//'
+}
+
+# --- Model ---
+model=$(json_val "display_name")
+[ -z "$model" ] && model="Unknown Model"
+
+# --- Project path (last 2 components) ---
+project_dir=$(json_val "project_dir")
+[ -z "$project_dir" ] && project_dir=$(json_val "cwd")
 short_path=$(echo "$project_dir" | sed 's|\\\\|/|g; s|\\|/|g' | awk -F'/' '{
   n=NF
   if (n >= 2) print $(n-1)"/"$n
   else print $n
 }')
 
-# --- Git branch (--no-optional-locks avoids blocking on lock files) ---
+# --- Git branch ---
 branch=""
 if [ -n "$project_dir" ]; then
-  branch=$(git -C "$project_dir" --no-optional-locks symbolic-ref --short HEAD 2>/dev/null)
+  norm_dir=$(echo "$project_dir" | sed 's|\\\\|/|g; s|\\|/|g')
+  branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$norm_dir" symbolic-ref --short HEAD 2>/dev/null)
 fi
 
-# --- Context window usage bar (10 blocks) ---
-used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-if [ -n "$used_pct" ]; then
-  filled=$(printf "%.0f" "$(echo "$used_pct * 10 / 100" | bc -l 2>/dev/null || echo 0)")
+# --- Context window usage bar (10 blocks, dynamic color) ---
+ctx_block=$(echo "$input" | sed -n 's/.*"context_window"[[:space:]]*:[[:space:]]*{//p' | grep -o '"used_percentage"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | sed 's/.*:[[:space:]]*//')
+if [ -n "$ctx_block" ]; then
+  pct_int=$(printf "%.0f" "$ctx_block" 2>/dev/null || echo 0)
+  filled=$(( pct_int * 10 / 100 ))
   [ "$filled" -gt 10 ] && filled=10
-  empty_blocks=$((10 - filled))
+  empty_b=$(( 10 - filled ))
   bar=""
-  for i in $(seq 1 "$filled" 2>/dev/null); do bar="${bar}#"; done
-  for i in $(seq 1 "$empty_blocks" 2>/dev/null); do bar="${bar}-"; done
-  ctx_display=$(printf "ctx [%s] %.0f%%" "$bar" "$used_pct")
+  i=0; while [ $i -lt "$filled" ]; do bar="${bar}█"; i=$((i+1)); done
+  i=0; while [ $i -lt "$empty_b" ]; do bar="${bar}░"; i=$((i+1)); done
+  # Dynamic color: green ≤60, yellow ≤80, red >80
+  if [ "$pct_int" -gt 80 ]; then
+    ctx_color="31"  # red
+    ctx_dot="🔴"
+  elif [ "$pct_int" -gt 60 ]; then
+    ctx_color="33"  # yellow
+    ctx_dot="🟡"
+  else
+    ctx_color="32"  # green
+    ctx_dot="🟢"
+  fi
+  ctx_display=$(printf "%s %s %d%%" "$ctx_dot" "$bar" "$pct_int")
 else
-  ctx_display="ctx [----------] --"
+  ctx_color="32"
+  ctx_display="🟢 ░░░░░░░░░░ --"
 fi
 
-# --- Rate limits (Claude.ai subscription only, absent otherwise) ---
-five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
-week_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
-rate_display=""
+# --- Time remaining helper ---
+time_remaining() {
+  local resets_at=$1
+  local now=$(date +%s)
+  local diff=$(( resets_at - now ))
+  [ "$diff" -le 0 ] && echo "agora" && return
+  local days=$(( diff / 86400 ))
+  local hours=$(( (diff % 86400) / 3600 ))
+  local mins=$(( (diff % 3600) / 60 ))
+  local result=""
+  [ "$days" -gt 0 ] && result="${days}d"
+  [ "$hours" -gt 0 ] && result="${result}${hours}h"
+  [ "$mins" -gt 0 ] && [ "$days" -eq 0 ] && result="${result}${mins}m"
+  echo "${result:-agora}"
+}
+
+# --- Rate limits ---
+five_pct=$(json_block_num "five_hour" "used_percentage")
+five_resets=$(json_block_num "five_hour" "resets_at")
+week_pct=$(json_block_num "seven_day" "used_percentage")
+week_resets=$(json_block_num "seven_day" "resets_at")
+
+# --- Assemble segments ---
+parts=""
+
+# Session (5h) rate limit
 if [ -n "$five_pct" ]; then
-  rate_display=$(printf "5h:%.0f%%" "$five_pct")
+  five_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo 0)
+  five_time=""
+  [ -n "$five_resets" ] && five_time=" - reinicia em $(time_remaining "$five_resets")"
+  parts="${parts}⏱️ Sessao: ${five_int}%${five_time}"
 fi
+
+# Weekly (7d) rate limit
 if [ -n "$week_pct" ]; then
-  week_str=$(printf "7d:%.0f%%" "$week_pct")
-  rate_display="${rate_display:+$rate_display }$week_str"
+  week_int=$(printf "%.0f" "$week_pct" 2>/dev/null || echo 0)
+  week_time=""
+  [ -n "$week_resets" ] && week_time=" - reinicia em $(time_remaining "$week_resets")"
+  [ -n "$parts" ] && parts="${parts} \033[90m|\033[0m "
+  parts="${parts}📅 Semanal: ${week_int}%${week_time}"
 fi
 
-# --- Assemble the status line ---
-# Model (cyan bold)
-line=$(printf "\033[1;36m%s\033[0m" "$model")
+# Separator before model
+[ -n "$parts" ] && parts="${parts} \033[90m|\033[0m "
 
-# Project path (yellow)
+# Model
+parts="${parts}\033[1;36m🐙 ${model}\033[0m"
+
+# Context bar
+parts="${parts} \033[90m|\033[0m \033[${ctx_color}m${ctx_display}\033[0m"
+
+# Path
 if [ -n "$short_path" ]; then
-  line=$(printf "%s  \033[33m%s\033[0m" "$line" "$short_path")
+  parts="${parts} \033[90m|\033[0m \033[33m📁 ${short_path}\033[0m"
 fi
 
-# Git branch (magenta)
+# Git branch
 if [ -n "$branch" ]; then
-  line=$(printf "%s \033[35m(%s)\033[0m" "$line" "$branch")
+  parts="${parts} \033[90m|\033[0m \033[35m🌿 ${branch}\033[0m"
 fi
 
-# Context bar (green)
-line=$(printf "%s  \033[32m%s\033[0m" "$line" "$ctx_display")
-
-# Rate limits (red, only when present)
-if [ -n "$rate_display" ]; then
-  line=$(printf "%s  \033[31m%s\033[0m" "$line" "$rate_display")
-fi
-
-printf "%s\n" "$line"
+printf "%b\n" "$parts"
