@@ -53,18 +53,15 @@ if [ -n "$ctx_block" ]; then
   # Dynamic color: green ≤60, yellow ≤80, red >80
   if [ "$pct_int" -gt 80 ]; then
     ctx_color="31"  # red
-    ctx_dot="🔴"
   elif [ "$pct_int" -gt 60 ]; then
     ctx_color="33"  # yellow
-    ctx_dot="🟡"
   else
     ctx_color="32"  # green
-    ctx_dot="🟢"
   fi
-  ctx_display=$(printf "%s %s %d%%" "$ctx_dot" "$bar" "$pct_int")
+  ctx_display=$(printf "\033[${ctx_color}m%s %d%%\033[0m" "$bar" "$pct_int")
 else
   ctx_color="32"
-  ctx_display="🟢 ░░░░░░░░░░ --"
+  ctx_display="░░░░░░░░░░ --"
 fi
 
 # --- Time remaining helper ---
@@ -83,6 +80,24 @@ time_remaining() {
   echo "${result:-agora}"
 }
 
+# --- Rate limit bar builder ---
+rate_bar() {
+  local pct_int=$1
+  local filled=$(( pct_int * 10 / 100 ))
+  [ "$filled" -gt 10 ] && filled=10
+  local empty_b=$(( 10 - filled ))
+  local bar="" i=0
+  while [ $i -lt "$filled" ]; do bar="${bar}█"; i=$((i+1)); done
+  i=0
+  while [ $i -lt "$empty_b" ]; do bar="${bar}░"; i=$((i+1)); done
+  local color dot
+  if [ "$pct_int" -gt 80 ]; then color="31"
+  elif [ "$pct_int" -gt 60 ]; then color="33"
+  else color="32"
+  fi
+  printf "\033[${color}m${bar} ${pct_int}%%\033[0m"
+}
+
 # --- Rate limits ---
 five_pct=$(json_block_num "five_hour" "used_percentage")
 five_resets=$(json_block_num "five_hour" "resets_at")
@@ -96,27 +111,30 @@ parts=""
 if [ -n "$five_pct" ]; then
   five_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo 0)
   five_time=""
-  [ -n "$five_resets" ] && five_time=" - reinicia em $(time_remaining "$five_resets")"
-  parts="${parts}⏱️ Sessao: ${five_int}%${five_time}"
+  [ -n "$five_resets" ] && five_time=" - $(time_remaining "$five_resets")"
+  five_color=32; [ "$five_int" -gt 60 ] && five_color=33; [ "$five_int" -gt 80 ] && five_color=31
+  parts="${parts}⏱️ $(rate_bar "$five_int")\033[${five_color}m${five_time}\033[0m"
 fi
 
 # Weekly (7d) rate limit
 if [ -n "$week_pct" ]; then
   week_int=$(printf "%.0f" "$week_pct" 2>/dev/null || echo 0)
   week_time=""
-  [ -n "$week_resets" ] && week_time=" - reinicia em $(time_remaining "$week_resets")"
+  [ -n "$week_resets" ] && week_time=" - $(time_remaining "$week_resets")"
+  week_color=32; [ "$week_int" -gt 60 ] && week_color=33; [ "$week_int" -gt 80 ] && week_color=31
   [ -n "$parts" ] && parts="${parts} \033[90m|\033[0m "
-  parts="${parts}📅 Semanal: ${week_int}%${week_time}"
+  parts="${parts}📅 $(rate_bar "$week_int")\033[${week_color}m${week_time}\033[0m"
 fi
 
-# Separator before model
+# Context bar (next to weekly)
 [ -n "$parts" ] && parts="${parts} \033[90m|\033[0m "
+parts="${parts}🧠 ${ctx_display}"
+
+# Separator before model
+parts="${parts} \033[90m|\033[0m "
 
 # Model
 parts="${parts}\033[1;36m🐙 ${model}\033[0m"
-
-# Context bar
-parts="${parts} \033[90m|\033[0m \033[${ctx_color}m${ctx_display}\033[0m"
 
 # Path
 if [ -n "$short_path" ]; then
