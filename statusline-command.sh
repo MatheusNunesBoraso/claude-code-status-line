@@ -23,6 +23,12 @@ json_block_num() {
 # --- Model ---
 model=$(json_val "display_name")
 [ -z "$model" ] && model="Unknown Model"
+case "$(echo "$model" | tr 'A-Z' 'a-z')" in
+  *opus*)   model_emoji="🐙" ;;
+  *sonnet*) model_emoji="🎵" ;;
+  *haiku*)  model_emoji="🌸" ;;
+  *)        model_emoji="🤖" ;;
+esac
 
 # --- Project path (last 2 components) ---
 project_dir=$(json_val "project_dir")
@@ -40,28 +46,24 @@ if [ -n "$project_dir" ]; then
   branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$norm_dir" symbolic-ref --short HEAD 2>/dev/null)
 fi
 
-# --- Context window usage bar (10 blocks, dynamic color) ---
+# --- Percentage color: green -> yellow -> orange -> red ---
+pct_color() {
+  local p=$1 c
+  if   [ "$p" -gt 90 ]; then c="1;31"      # ESTOURANDO
+  elif [ "$p" -gt 75 ]; then c="38;5;208"  # laranja
+  elif [ "$p" -gt 50 ]; then c="33"        # amarelo
+  else                       c="32"        # verde
+  fi
+  printf "\033[${c}m%d%%\033[0m" "$p"
+}
+
+# --- Context window usage ---
 ctx_block=$(echo "$input" | sed -n 's/.*"context_window"[[:space:]]*:[[:space:]]*{//p' | grep -o '"used_percentage"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | sed 's/.*:[[:space:]]*//')
 if [ -n "$ctx_block" ]; then
   pct_int=$(printf "%.0f" "$ctx_block" 2>/dev/null || echo 0)
-  filled=$(( pct_int * 10 / 100 ))
-  [ "$filled" -gt 10 ] && filled=10
-  empty_b=$(( 10 - filled ))
-  bar=""
-  i=0; while [ $i -lt "$filled" ]; do bar="${bar}█"; i=$((i+1)); done
-  i=0; while [ $i -lt "$empty_b" ]; do bar="${bar}░"; i=$((i+1)); done
-  # Dynamic color: green ≤60, yellow ≤80, red >80
-  if [ "$pct_int" -gt 80 ]; then
-    ctx_color="31"  # red
-  elif [ "$pct_int" -gt 60 ]; then
-    ctx_color="33"  # yellow
-  else
-    ctx_color="32"  # green
-  fi
-  ctx_display=$(printf "\033[${ctx_color}m%s %d%%\033[0m" "$bar" "$pct_int")
+  ctx_display=$(pct_color "$pct_int")
 else
-  ctx_color="32"
-  ctx_display="░░░░░░░░░░ --"
+  ctx_display="--"
 fi
 
 # --- Time remaining helper ---
@@ -80,22 +82,14 @@ time_remaining() {
   echo "${result:-agora}"
 }
 
-# --- Rate limit bar builder ---
-rate_bar() {
-  local pct_int=$1
-  local filled=$(( pct_int * 10 / 100 ))
-  [ "$filled" -gt 10 ] && filled=10
-  local empty_b=$(( 10 - filled ))
-  local bar="" i=0
-  while [ $i -lt "$filled" ]; do bar="${bar}█"; i=$((i+1)); done
-  i=0
-  while [ $i -lt "$empty_b" ]; do bar="${bar}░"; i=$((i+1)); done
-  local color dot
-  if [ "$pct_int" -gt 80 ]; then color="31"
-  elif [ "$pct_int" -gt 60 ]; then color="33"
-  else color="32"
-  fi
-  printf "\033[${color}m${bar} ${pct_int}%%\033[0m"
+# --- Burn rate: fire = gastando mais rapido que o relogio, gelo = folgado ---
+pace_flag() {
+  local pct=$1 resets=$2 window=$3
+  [ -z "$resets" ] && return
+  local remaining=$(( resets - $(date +%s) ))
+  if [ "$remaining" -le 0 ] || [ "$remaining" -gt "$window" ]; then return; fi
+  local elapsed_pct=$(( (window - remaining) * 100 / window ))
+  if [ "$pct" -gt "$elapsed_pct" ]; then printf " 🔥"; else printf " 🧊"; fi
 }
 
 # --- Rate limits ---
@@ -105,45 +99,49 @@ week_pct=$(json_block_num "seven_day" "used_percentage")
 week_resets=$(json_block_num "seven_day" "resets_at")
 
 # --- Assemble segments ---
-parts=""
+sep="\033[90m │ \033[0m"
 
-# Session (5h) rate limit
+# --- Linha 1: limites + contexto + modelo ---
+l1=""
 if [ -n "$five_pct" ]; then
   five_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo 0)
   five_time=""
   [ -n "$five_resets" ] && five_time=" - $(time_remaining "$five_resets")"
-  five_color=32; [ "$five_int" -gt 60 ] && five_color=33; [ "$five_int" -gt 80 ] && five_color=31
-  parts="${parts}⏱️ $(rate_bar "$five_int")\033[${five_color}m${five_time}\033[0m"
+  l1="⏳ $(pct_color "$five_int")$(pace_flag "$five_int" "$five_resets" 18000)\033[90m${five_time}\033[0m"
 fi
-
-# Weekly (7d) rate limit
 if [ -n "$week_pct" ]; then
   week_int=$(printf "%.0f" "$week_pct" 2>/dev/null || echo 0)
   week_time=""
   [ -n "$week_resets" ] && week_time=" - $(time_remaining "$week_resets")"
-  week_color=32; [ "$week_int" -gt 60 ] && week_color=33; [ "$week_int" -gt 80 ] && week_color=31
-  [ -n "$parts" ] && parts="${parts} \033[90m|\033[0m "
-  parts="${parts}📅 $(rate_bar "$week_int")\033[${week_color}m${week_time}\033[0m"
+  [ -n "$l1" ] && l1="${l1}${sep}"
+  l1="${l1}📅 $(pct_color "$week_int")$(pace_flag "$week_int" "$week_resets" 604800)\033[90m${week_time}\033[0m"
 fi
+[ -n "$l1" ] && l1="${l1}${sep}"
+l1="${l1}🧠 ${ctx_display}${sep}\033[1;36m${model_emoji} ${model}\033[0m"
 
-# Context bar (next to weekly)
-[ -n "$parts" ] && parts="${parts} \033[90m|\033[0m "
-parts="${parts}🧠 ${ctx_display}"
-
-# Separator before model
-parts="${parts} \033[90m|\033[0m "
-
-# Model
-parts="${parts}\033[1;36m🐙 ${model}\033[0m"
-
-# Path
-if [ -n "$short_path" ]; then
-  parts="${parts} \033[90m|\033[0m \033[33m📁 ${short_path}\033[0m"
+# --- Linha 2: diff da sessao + branch ---
+lines_add=$(json_block_num "cost" "total_lines_added")
+lines_del=$(json_block_num "cost" "total_lines_removed")
+: "${lines_add:=0}" "${lines_del:=0}"
+l2=""
+if [ "$lines_add" -gt 0 ] || [ "$lines_del" -gt 0 ]; then
+  l2="📝 \033[32m+${lines_add}\033[0m\033[90m/\033[0m\033[31m-${lines_del}\033[0m"
 fi
-
-# Git branch
 if [ -n "$branch" ]; then
-  parts="${parts} \033[90m|\033[0m \033[35m🌿 ${branch}\033[0m"
+  [ -n "$l2" ] && l2="${l2}${sep}"
+  l2="${l2}\033[35m🌿 ${branch}\033[0m"
 fi
 
-printf "%b\n" "$parts"
+# --- Linha 3: pasta ---
+l3="\033[33m📁 ${short_path}\033[0m"
+
+# --- Saida em arvore ---
+out="$l1"
+[ -n "$l2" ] && out="${out}
+\033[90m├─\033[0m ${l2}"
+out="${out}
+\033[90m└─\033[0m ${l3}"
+# espaco antes da linha de modo do Claude Code (trailing vazio e aparado)
+printf "%b
+⠀
+" "$out"
