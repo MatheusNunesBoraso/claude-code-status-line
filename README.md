@@ -22,27 +22,58 @@
 ## ✨ Preview
 
 ```
-🐙 Opus 4.6 (1M context)  📂 meu-projeto/src  🌿 main  📊 [███░░░░░░░] 30%  ⏱️ Sessao: 57% - reinicia em 2h37m  📅 Semanal: 31% - reinicia em 3d14h
+⏳ 29% 🧊 - 3h3m │ 📅 8% 🧊 - 5d13h │ 🧠 8% │ 🐙 Opus 5 (1M context)
+├─ 📝 +312/-89 │ 🌿 main
+└─ 📁 .dev/meu-projeto
 ```
 
-```
-🎵 Sonnet 4.6  📂 api/backend  🌿 feature/auth  📊 [██████░░░░] 62%  ⏱️ Sessao: 20% - reinicia em 4h12m  📅 Semanal: 8% - reinicia em 5d2h
-```
+Sessao apertada, queimando rapido:
 
 ```
-🌸 Haiku 4.5  📂 scripts/utils  📊 [█░░░░░░░░░] 5%  ⏱️ Sessao: 3% - reinicia em 4h58m
+⏳ 78% 🔥 - 1h12m │ 📅 94% 🔥 - 2d4h │ 🧠 83% │ 🎵 Sonnet 5
+├─ 📝 +1204/-377 │ 🌿 feature/auth
+└─ 📁 api/backend
+```
+
+Fora de repo e sem edicoes — a linha do meio some sozinha:
+
+```
+⏳ 3% 🧊 - 4h58m │ 📅 8% 🧊 - 5d2h │ 🧠 5% │ 🌸 Haiku 4.5
+└─ 📁 scripts/utils
 ```
 
 ## 📋 O que mostra
 
 | Segmento | Emoji | Cor | Descricao |
 |---|---|---|---|
+| **Limite 5h** | ⏳ | Dinamica | % usado da janela de 5h + tempo pro reset |
+| **Ritmo** | 🧊 / 🔥 | — | Gelo: consumo abaixo do relogio. Fogo: queimando mais rapido que o tempo passa |
+| **Limite semanal** | 📅 | Dinamica | % usado da janela de 7 dias + tempo pro reset |
+| **Contexto** | 🧠 | Dinamica | % da janela de contexto desta conversa |
 | **Modelo** | 🐙 🎵 🌸 🤖 | Ciano | Nome do modelo com emoji dinamico |
-| **Projeto** | 📂 | Amarelo | Ultimas 2 pastas do caminho do projeto |
+| **Diff da sessao** | 📝 | Verde/Vermelho | Linhas adicionadas/removidas (oculto se zero) |
 | **Branch** | 🌿 | Magenta | Branch atual do Git (oculto se nao for um repo) |
-| **Contexto** | 📊 | Verde | Barra visual de uso da janela de contexto |
-| **Sessao** | ⏱️ | Amarelo | % usado do rate limit de 5h + tempo pro reset |
-| **Semanal** | 📅 | Vermelho | % usado do rate limit semanal + tempo pro reset |
+| **Projeto** | 📁 | Amarelo | Ultimas 2 pastas do caminho do projeto |
+
+### Escala de cor das porcentagens
+
+Vale pros tres indicadores (⏳ 📅 🧠) — a mesma funcao `pct_color` colore todos:
+
+| Faixa | Cor |
+|---|---|
+| ate 50% | 🟢 Verde |
+| 51–75% | 🟡 Amarelo |
+| 76–90% | 🟠 Laranja |
+| acima de 90% | 🔴 **Vermelho negrito** |
+
+### Ritmo de consumo (🧊 / 🔥)
+
+A porcentagem sozinha nao diz se voce esta indo rapido demais. `29% - 3h3m` numa
+janela de 5h significa que 39% do tempo passou e so 29% foi gasto: folga.
+
+O script compara **% consumido** contra **% da janela que ja correu** e mostra
+🔥 quando o consumo esta na frente do relogio, 🧊 quando esta atras. O aviso
+chega antes da barra virar vermelha.
 
 ### Emojis por modelo
 
@@ -139,6 +170,19 @@ case "$model_lower" in
 esac
 ```
 
+**Mudar as faixas de cor:**
+```bash
+pct_color() {
+  local p=$1 c
+  if   [ "$p" -gt 90 ]; then c="1;31"      # vermelho negrito
+  elif [ "$p" -gt 75 ]; then c="38;5;208"  # laranja
+  elif [ "$p" -gt 50 ]; then c="33"        # amarelo
+  else                       c="32"        # verde
+  fi
+  ...
+}
+```
+
 **Mudar cores ANSI:**
 ```bash
 # Cores disponiveis:
@@ -148,8 +192,25 @@ esac
 # Adicione 1; para negrito: \033[1;36m = Ciano Bold
 ```
 
+**Mudar o separador:**
+```bash
+sep="\033[90m │ \033[0m"   # troque │ por |, ·, ou o que quiser
+```
+
 **Remover um segmento:**
-Comente ou delete o bloco correspondente no `# --- Assemble ---`.
+Comente ou delete o bloco correspondente em `# --- Linha 1/2/3 ---`.
+
+**Reorganizar as linhas:**
+Os tres blocos montam `$l1`, `$l2` e `$l3` de forma independente — mover um
+segmento de linha e trocar a variavel que ele concatena.
+
+### O espaco antes da linha de modo
+
+A ultima linha do output e um `⠀` (U+2800, braille pattern blank). Nao e enfeite:
+o Claude Code apara linhas finais em branco, e espaco comum ou NBSP contam como
+whitespace e somem. U+2800 nao e whitespace em Unicode, entao sobrevive ao corte
+e renderiza invisivel — e o unico jeito de ganhar um respiro entre a status line
+e a linha de modo (`auto mode on...`). Delete se nao quiser o espaco.
 
 ---
 
@@ -172,9 +233,10 @@ O Claude Code envia um JSON via `stdin` para o script configurado em `statusLine
 
 ```json
 {
-  "model": { "display_name": "Opus 4.6 (1M context)" },
+  "model": { "display_name": "Opus 5 (1M context)" },
   "workspace": { "project_dir": "/home/user/projeto" },
   "context_window": { "used_percentage": 30 },
+  "cost": { "total_lines_added": 312, "total_lines_removed": 89 },
   "rate_limits": {
     "five_hour": { "used_percentage": 57, "resets_at": 1775811600 },
     "seven_day": { "used_percentage": 31, "resets_at": 1776128400 }
@@ -182,7 +244,14 @@ O Claude Code envia um JSON via `stdin` para o script configurado em `statusLine
 }
 ```
 
-O script parseia esse JSON com **bash puro** (sem `jq`, sem `bc`, sem dependencias externas) e monta a linha formatada com cores ANSI.
+O script parseia esse JSON com **bash puro** (sem `jq`, sem `bc`, sem dependencias externas) e monta a saida formatada com cores ANSI. O `resets_at` (timestamp Unix) alimenta tanto o contador de reset quanto o calculo de ritmo 🧊/🔥.
+
+Testar sem abrir o Claude Code:
+
+```bash
+echo '{"display_name":"Opus 5","cwd":"/tmp/projeto","context_window":{"used_percentage":30},"five_hour":{"used_percentage":57,"resets_at":'$(( $(date +%s) + 9420 ))'}}' \
+  | bash statusline-command.sh
+```
 
 ---
 
